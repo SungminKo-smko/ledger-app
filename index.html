@@ -155,7 +155,7 @@ dialog::backdrop{ background:rgba(10,15,20,.45); }
 .card .head{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
 .card .nm{ font-weight:600; font-size:1.05rem; }
 .card .sub{ font-size:.8rem; color:var(--muted); }
-.card .edit{ border:1px solid var(--line); background:transparent; border-radius:999px; padding:4px 12px; font-size:.8rem; cursor:pointer; }
+.card .edit{ flex:none; white-space:nowrap; border:1px solid var(--line); background:transparent; border-radius:999px; padding:4px 12px; font-size:.8rem; cursor:pointer; }
 .bill{ display:grid; grid-template-columns:1fr auto; gap:2px 12px; padding:12px 0 0; margin-top:12px; border-top:1px solid var(--line); width:100%; border-left:0; border-right:0; border-bottom:0; background:transparent; text-align:left; cursor:pointer; }
 .bill .l{ font-size:.85rem; color:var(--muted); }
 .bill .v{ font-size:1.35rem; font-weight:700; text-align:right; }
@@ -659,7 +659,8 @@ function openCardEditor(id, newKey) {
       <div><label>이용기간</label><div class="line">
         <select id="sm">${months(c.start.m, [-2, -1, 0])}</select><select id="sd">${days(c.start.d)}</select> ~
         <select id="em">${months(c.end.m, [-1, 0])}</select><select id="ed">${days(c.end.d)}</select></div>
-        <div class="hint" style="margin-top:6px">카드사 앱이나 청구서의 "이용기간"을 그대로 옮기세요. 예: 14일 결제 → 전월 1일 ~ 전월 말일</div></div>
+        <div class="hint" id="preview" style="margin-top:6px;color:var(--ink)"></div>
+        <div class="hint" style="margin-top:4px">카드사 앱이나 청구서의 "이용기간"을 그대로 옮기세요. 예: 25일 결제 → 전월 14일 ~ 당월 13일</div></div>
       <div class="keys"><label>이 카드로 묶을 기록</label>
         ${detectedKeys.filter(k => !assignedElsewhere.has(k)).map(k => `<label><input type="checkbox" value="${esc(k)}" ${c.keys.includes(k) ? "checked" : ""}> ${esc(keyLabel(k))}</label>`).join("") || `<div class="hint">묶을 수 있는 기록이 없어요.</div>`}
         <div class="hint">간편결제(GS페이 등)는 문자와 영수증의 끝자리가 다르게 찍혀요. 같은 카드면 함께 체크하세요.</div></div>
@@ -673,6 +674,24 @@ function openCardEditor(id, newKey) {
   document.querySelectorAll("[data-owner]").forEach(b => b.onclick = () => {
     c.owner = b.dataset.owner || null; document.querySelectorAll("[data-owner]").forEach(x => x.setAttribute("aria-pressed", (x.dataset.owner || null) === c.owner));
   });
+  // 입력값으로 다음 청구서를 미리 계산해 보여준다. 시작일이 종료일보다 뒤인데 같은 달이면 종료를 다음 달로 맞춘다
+  const readForm = () => ({ pay_day: Number($("#payday").value),
+    start: { m: Number($("#sm").value), d: Number($("#sd").value) }, end: { m: Number($("#em").value), d: Number($("#ed").value) } });
+  const refresh = (changed) => {
+    let f = readForm();
+    if (["sm", "sd", "ed"].includes(changed) && f.end.m <= f.start.m && f.end.d < f.start.d && f.start.m + 1 <= 0) {
+      $("#em").value = String(f.start.m + 1); f = readForm();
+    }
+    const t = todayStr().split("-").map(Number), [py, pm] = addMonths(t[0], t[1], 1), st = statement(f, py, pm);
+    const days = (new Date(st.to) - new Date(st.from)) / 864e5 + 1;
+    const bad = st.from > st.to || days < 27 || days > 32;
+    $("#preview").innerHTML = bad
+      ? `<span style="color:var(--bad)">이용기간이 이상해요: ${md(st.from)} ~ ${md(st.to)} (${Math.max(0, days)}일). 시작·종료 달을 확인하세요.</span>`
+      : `미리보기: ${md(st.pay)} 결제 → ${md(st.from)} ~ ${md(st.to)} 사용분`;
+    return !bad;
+  };
+  ["payday", "sm", "sd", "em", "ed"].forEach(id => $("#" + id).onchange = () => refresh(id));
+  refresh();
   const persist = async (mutate, msg) => {
     $("#cmsg").textContent = "저장 중…";
     try {
@@ -688,6 +707,7 @@ function openCardEditor(id, newKey) {
     c.end = { m: Number($("#em").value), d: Number($("#ed").value) };
     c.keys = [...document.querySelectorAll(".keys input:checked")].map(i => i.value);
     delete c.defaults;
+    if (!refresh()) { $("#cmsg").textContent = "이용기간을 먼저 바로잡아 주세요."; return; }
     if (!c.keys.length) { $("#cmsg").textContent = "묶을 기록을 하나 이상 체크해 주세요."; return; }
     persist(() => { state.cards = state.cards.filter(x => x.id !== c.id).concat([c]); }, `cards: ${c.name} ${existing ? "수정" : "등록"}`);
   };
