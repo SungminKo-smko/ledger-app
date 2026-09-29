@@ -146,6 +146,31 @@ dialog::backdrop{ background:rgba(10,15,20,.45); }
 .pending{ background:var(--paper); border-radius:var(--radius-lg); padding:12px 14px; margin-top:16px; font-size:.9rem; }
 .pending b{ font-weight:600; }
 .pending .fail{ color:var(--bad); margin-top:6px; font-size:.85rem; }
+/* 탭 */
+.tabs{ display:flex; gap:4px; background:var(--paper); border-radius:999px; padding:4px; margin:8px 0 0; }
+.tabs button{ flex:1; border:0; background:transparent; border-radius:999px; padding:8px 0; font-weight:500; cursor:pointer; color:var(--muted); }
+.tabs button[aria-selected="true"]{ background:var(--ink); color:var(--paper); }
+/* 카드 */
+.card{ background:var(--paper); border-radius:var(--radius-lg); padding:16px; margin-top:14px; }
+.card .head{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.card .nm{ font-weight:600; font-size:1.05rem; }
+.card .sub{ font-size:.8rem; color:var(--muted); }
+.card .edit{ border:1px solid var(--line); background:transparent; border-radius:999px; padding:4px 12px; font-size:.8rem; cursor:pointer; }
+.bill{ display:grid; grid-template-columns:1fr auto; gap:2px 12px; padding:12px 0 0; margin-top:12px; border-top:1px solid var(--line); width:100%; border-left:0; border-right:0; border-bottom:0; background:transparent; text-align:left; cursor:pointer; }
+.bill .l{ font-size:.85rem; color:var(--muted); }
+.bill .v{ font-size:1.35rem; font-weight:700; text-align:right; }
+.bill .p{ grid-column:1 / -1; font-size:.8rem; color:var(--muted); }
+.bill.now .v{ font-size:1.05rem; font-weight:600; color:var(--muted); }
+.unk{ font-size:.85rem; color:var(--muted); margin-top:14px; }
+.unk button{ margin:6px 6px 0 0; }
+.form{ display:grid; gap:14px; margin-top:14px; }
+.form label{ display:block; font-size:.85rem; color:var(--muted); margin-bottom:6px; }
+.form input[type=text], .form select{ font:inherit; padding:9px 10px; border-radius:var(--radius-sm); border:1px solid var(--line); background:var(--bg); color:var(--ink); }
+.form input[type=text]{ width:100%; }
+.form .line{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.form .keys label{ display:flex; gap:8px; align-items:center; color:var(--ink); font-size:.9rem; margin:4px 0; }
+.form .hint{ font-size:.8rem; color:var(--muted); }
+.danger{ margin-top:8px; width:100%; padding:10px; border-radius:var(--radius-sm); border:1px solid var(--bad); color:var(--bad); background:transparent; cursor:pointer; }
 @media (prefers-reduced-motion: reduce){ *{ transition:none !important; } }
 </style>
 </head>
@@ -208,7 +233,7 @@ function parseCSV(text) {
 }
 
 // ---------------------------------------------------------------- 상태
-const state = { token: null, tx: [], items: [], month: null, payer: null, cat: null, loadedAt: null, inbox: { pending: 0, failed: [] } };
+const state = { token: null, tx: [], items: [], month: null, payer: null, cat: null, loadedAt: null, inbox: { pending: 0, failed: [] }, view: "ledger", cards: [], cardsSha: null };
 const ym = d => d.slice(0, 7);
 const monthLabel = m => `${m.slice(0, 4)}년 ${Number(m.slice(5, 7))}월`;
 function shiftMonth(m, k) { const d = new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + k, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
@@ -221,6 +246,7 @@ async function load() {
     state.tx = parseCSV(a).map(r => ({ ...r, total: Number(r.total) || 0, cancelled: r.status === "cancelled" }));
     state.items = b ? parseCSV(b).map(r => ({ ...r, net: Number(r.net) || 0, amount: Number(r.amount) || 0 })) : [];
     state.inbox = await loadInbox();
+    await loadCards();
     state.loadedAt = new Date();
     if (!state.month) {
       const months = state.tx.map(t => ym(t.date)).sort();
@@ -304,8 +330,12 @@ function render() {
         <button class="iconbtn" id="reload" aria-label="새로 불러오기" title="새로 불러오기">↻</button>
       </div>
     </div>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-view="ledger" aria-selected="${state.view === "ledger"}">가계부</button>
+      <button role="tab" data-view="cards" aria-selected="${state.view === "cards"}">카드·청구서</button>
+    </div>
     ${pendingHTML()}
-
+    ${state.view === "cards" ? cardsHTML() : `
     <div class="hero">
       <div class="total">${won(total)}<small>원</small></div>
       <div class="delta">${deltaHtml}</div>
@@ -354,6 +384,7 @@ function render() {
       </div>
       <div class="list">${listHTML(list)}</div>
     </section>
+    `}
 
     <div class="foot">
       <span>${state.loadedAt ? `${state.loadedAt.getHours()}:${String(state.loadedAt.getMinutes()).padStart(2, "0")} 기준` : ""}</span>
@@ -365,10 +396,14 @@ function render() {
   $("#next").onclick = () => { if (canNext) { state.month = shiftMonth(m, 1); state.cat = null; render(); } };
   $("#reload").onclick = load;
   $("#add").onclick = openUpload;
+  document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { state.view = b.dataset.view; render(); });
+  document.querySelectorAll("[data-card-edit]").forEach(b => b.onclick = () => openCardEditor(b.dataset.cardEdit));
+  document.querySelectorAll("[data-card-new]").forEach(b => b.onclick = () => openCardEditor(null, b.dataset.cardNew));
+  document.querySelectorAll("[data-bill]").forEach(b => b.onclick = () => openBill(b.dataset.bill, Number(b.dataset.k)));
   $("#logout").onclick = () => { if (confirm("이 기기에 저장된 토큰을 지울까요? 다시 열려면 토큰이 필요해요.")) { forgetToken(); state.token = null; gate(); } };
   document.querySelectorAll("[data-payer]").forEach(b => b.onclick = () => { state.payer = state.payer === b.dataset.payer ? null : b.dataset.payer; render(); });
   document.querySelectorAll(".cat").forEach(b => b.onclick = () => { state.cat = state.cat === b.dataset.cat ? null : b.dataset.cat; render(); });
-  document.querySelectorAll(".chip").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".filters .chip").forEach(b => b.onclick = () => {
     const f = b.dataset.f, v = b.dataset.v;
     if (f === "all") { state.payer = null; state.cat = null; }
     if (f === "payer") state.payer = state.payer === v ? null : v;
@@ -467,6 +502,197 @@ async function openDetail(id) {
       $("#imgbox").innerHTML = `<img class="receipt" alt="${esc(t.merchant)} 영수증" src="${URL.createObjectURL(blob)}">`;
       btn.remove();
     } catch (e) { btn.textContent = "사진을 불러오지 못했어요. 다시 시도"; btn.disabled = false; }
+  };
+}
+
+// ---------------------------------------------------------------- 카드 · 청구서
+// 카드 설정은 private repo 의 cards.json 에 저장된다.
+// { id, name, owner, keys: ["삼성|5492", ...], pay_day, start: {m:-1, d:1}, end: {m:-1, d:31} }
+//   start/end.m : 결제월 기준 몇 달 전(-2 전전월, -1 전월, 0 당월), d=31 은 "말일"
+const ISSUERS = ["KB국민", "국민", "신한", "삼성", "현대", "롯데", "우리", "하나", "NH농협", "농협", "BC", "비씨", "씨티", "카카오뱅크", "케이뱅크", "토스", "IBK", "기업"];
+function normIssuer(s) {
+  s = String(s || "").replace(/\s/g, "");
+  const hit = ISSUERS.find(i => s.includes(i));
+  return hit ? hit.replace(/^국민$/, "KB국민").replace(/^농협$/, "NH농협").replace(/^비씨$/, "BC").replace(/^기업$/, "IBK") : (s.replace(/카드.*$/, "") || "");
+}
+const cardKey = t => {
+  const iss = normIssuer(t.card_issuer);
+  if (!iss && !t.card_last4) return null;
+  return `${iss || "카드"}|${t.card_last4 || "????"}`;
+};
+const keyLabel = k => { const [i, l] = k.split("|"); return `${i}카드 ${l === "????" ? "(번호 없음)" : "…" + l}`; };
+const DEFAULT_CARD = { pay_day: 14, start: { m: -1, d: 1 }, end: { m: -1, d: 31 } };
+
+async function loadCards() {
+  try {
+    const f = await api("GET", `/contents/cards.json?ref=${BRANCH}`);
+    const bytes = Uint8Array.from(atob(f.content.replace(/\n/g, "")), c => c.charCodeAt(0));
+    state.cards = JSON.parse(new TextDecoder().decode(bytes)).cards || [];
+    state.cardsSha = f.sha;
+  } catch (e) { if (e.status === 404) { state.cards = []; state.cardsSha = null; } else throw e; }
+}
+async function saveCards(message) {
+  const content = b64utf8(JSON.stringify({ cards: state.cards }, null, 2) + "\n");
+  const r = await api("PUT", "/contents/cards.json", { message, content, sha: state.cardsSha || undefined, branch: BRANCH });
+  state.cardsSha = r.content.sha;
+}
+
+// 날짜 도우미 (문자열 YYYY-MM-DD, 달 넘김·말일 처리)
+const pad2 = n => String(n).padStart(2, "0");
+function ymd(y, m, d) { const last = new Date(y, m, 0).getDate(); return `${y}-${pad2(m)}-${pad2(Math.min(d, last))}`; }
+function addMonths(y, m, k) { const t = new Date(y, m - 1 + k, 1); return [t.getFullYear(), t.getMonth() + 1]; }
+const todayStr = () => { const d = new Date(); return ymd(d.getFullYear(), d.getMonth() + 1, d.getDate()); };
+
+// 결제월(y,m)의 청구서: 결제일과 이용기간
+function statement(card, y, m) {
+  const c = { ...DEFAULT_CARD, ...card };
+  const [sy, sm] = addMonths(y, m, c.start.m), [ey, em] = addMonths(y, m, c.end.m);
+  return { y, m, pay: ymd(y, m, c.pay_day), from: ymd(sy, sm, c.start.d), to: ymd(ey, em, c.end.d) };
+}
+// 사용일이 속한 청구서의 결제월
+function payMonthOf(card, date) {
+  const [y, m] = date.split("-").map(Number);
+  for (let k = -1; k <= 4; k++) {
+    const [py, pm] = addMonths(y, m, k), st = statement(card, py, pm);
+    if (date >= st.from && date <= st.to) return [py, pm];
+  }
+  return null;
+}
+const monthsBetween = (a, b) => (b[0] - a[0]) * 12 + (b[1] - a[1]);
+const cardTx = card => state.tx.filter(t => !t.cancelled && card.keys.includes(cardKey(t)));
+
+// 결제월(y,m) 청구 예상액: 일시불은 사용일이 그 이용기간에 있으면 전액,
+// 할부 N개월은 첫 청구서부터 N번에 나눠 (원금만, 할부 수수료 제외)
+function bill(card, y, m) {
+  const st = statement(card, y, m), lines = [];
+  for (const t of cardTx(card)) {
+    const pm = payMonthOf(card, t.date); if (!pm) continue;
+    const n = Number((t.installment || "").match(/(\d+)\s*개월/)?.[1] || 1);
+    const k = monthsBetween(pm, [y, m]);
+    if (k < 0 || k >= n) continue;
+    const base = Math.floor(t.total / n), amt = k === 0 ? t.total - base * (n - 1) : base;
+    lines.push({ t, amt, note: n > 1 ? `할부 ${k + 1}/${n}회` : "" });
+  }
+  lines.sort((a, b) => (a.t.date + a.t.time).localeCompare(b.t.date + b.t.time));
+  return { ...st, total: lines.reduce((s, l) => s + l.amt, 0), lines };
+}
+// 다가오는 청구서 두 개: 이번 결제(이용기간 마감) + 다음 결제(사용 중)
+function upcoming(card) {
+  const today = todayStr(), [y, m] = today.split("-").map(Number);
+  const out = [];
+  for (let k = -1; k <= 3 && out.length < 2; k++) {
+    const [py, pm] = addMonths(y, m, k), b = bill(card, py, pm);
+    if (b.pay >= today) out.push({ ...b, closed: b.to < today });
+  }
+  return out;
+}
+const md = s => `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`;
+const periodText = c => {
+  const mm = { "-2": "전전월", "-1": "전월", "0": "당월" }, dd = d => d >= 31 ? "말일" : `${d}일`;
+  c = { ...DEFAULT_CARD, ...c };
+  return `매월 ${c.pay_day}일 결제 · 이용기간 ${mm[c.start.m]} ${dd(c.start.d)} ~ ${mm[c.end.m]} ${dd(c.end.d)}`;
+};
+
+function cardsHTML() {
+  const detected = {};
+  for (const t of state.tx) { const k = cardKey(t); if (!k || t.cancelled) continue; (detected[k] ||= { n: 0, v: 0, payer: t.payer }).n++; detected[k].v += t.total; }
+  const assigned = new Set(state.cards.flatMap(c => c.keys));
+  const unassigned = Object.keys(detected).filter(k => !assigned.has(k));
+  const noCard = state.tx.filter(t => !t.cancelled && !cardKey(t)).length;
+  const cards = state.cards.map(c => {
+    const ups = upcoming(c), p = PAYERS.find(p => p.name === c.owner);
+    return `<div class="card">
+      <div class="head">
+        <div><div class="nm">${p ? `<span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${p.color};margin-right:6px"></span>` : ""}${esc(c.name)}</div>
+          <div class="sub">${esc(periodText(c))}${c.defaults ? " (기본값)" : ""}</div>
+          <div class="sub">${c.keys.map(keyLabel).map(esc).join(", ")}</div></div>
+        <button class="edit" data-card-edit="${esc(c.id)}">수정</button>
+      </div>
+      ${ups.map((b, i) => `<button class="bill ${i ? "now" : ""}" data-bill="${esc(c.id)}" data-k="${i}">
+        <span class="l">${md(b.pay)} 결제 예정 ${b.closed ? "(이용기간 마감)" : b.from > todayStr() ? "(다음 이용기간)" : "(사용 중)"}</span><span class="v">${won(b.total)}원</span>
+        <span class="p">이용기간 ${md(b.from)} ~ ${md(b.to)} · ${b.lines.length}건</span>
+      </button>`).join("")}
+    </div>`;
+  }).join("");
+  return `
+    ${cards || `<p class="empty" style="margin-top:14px">아직 등록한 카드가 없어요. 아래에서 기록된 카드를 등록하세요.</p>`}
+    ${unassigned.length ? `<div class="unk">가계부에서 찾은 미등록 카드 <span class="hint">(눌러서 등록 · 같은 카드는 수정 화면에서 묶기)</span><br>
+      ${unassigned.map(k => `<button class="chip" data-card-new="${esc(k)}">${esc(keyLabel(k))} · ${detected[k].n}건</button>`).join("")}</div>` : ""}
+    ${noCard ? `<div class="unk">카드 정보가 없는 기록 ${noCard}건은 청구서 계산에서 빠져요 (현금·계좌이체 등).</div>` : ""}
+    <div class="unk">예상액은 기록된 결제만으로 계산해요. 할부 수수료, 해외 수수료, 연회비, 기록되지 않은 결제는 빠져 있어 실제 청구서와 다를 수 있어요.</div>`;
+}
+
+function openBill(id, k) {
+  const c = state.cards.find(c => c.id === id); if (!c) return;
+  const b = upcoming(c)[k]; if (!b) return;
+  $("#sheetBody").innerHTML = `
+    <header><div><h3>${esc(c.name)}</h3><div class="sub" style="color:var(--muted);font-size:.85rem">${md(b.pay)} 결제 · 이용기간 ${md(b.from)} ~ ${md(b.to)}</div></div>
+      <button class="iconbtn" id="close" aria-label="닫기">✕</button></header>
+    <div class="big">${won(b.total)}원</div>
+    ${b.lines.length ? `<table class="items"><tbody>${b.lines.map(l => `
+      <tr><td>${esc(l.t.merchant)}<span class="c">${md(l.t.date)} ${esc(l.t.time || "")} · ${esc(l.t.payer || "")}${l.note ? " · " + esc(l.note) : ""}</span></td><td>${won(l.amt)}원</td></tr>`).join("")}</tbody></table>`
+      : `<p class="empty">이 기간에 기록된 결제가 없어요.</p>`}`;
+  const dlg = $("#sheet"); dlg.showModal();
+  $("#close").onclick = () => dlg.close();
+  dlg.onclick = e => { if (e.target === dlg) dlg.close(); };
+}
+
+function openCardEditor(id, newKey) {
+  const existing = id ? state.cards.find(c => c.id === id) : null;
+  const detectedKeys = [...new Set(state.tx.map(cardKey).filter(Boolean))];
+  const assignedElsewhere = new Set(state.cards.filter(c => c !== existing).flatMap(c => c.keys));
+  const guessOwner = newKey ? (state.tx.find(t => cardKey(t) === newKey) || {}).payer : null;
+  const c = existing ? JSON.parse(JSON.stringify(existing)) : {
+    id: "c" + Date.now().toString(36), name: newKey ? keyLabel(newKey) : "새 카드", owner: guessOwner || null,
+    keys: newKey ? [newKey] : [], ...JSON.parse(JSON.stringify(DEFAULT_CARD)) };
+  const opt = (v, cur, label) => `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${label}</option>`;
+  const days = sel => Array.from({ length: 31 }, (_, i) => opt(i + 1, sel, i + 1 === 31 ? "말일" : `${i + 1}일`)).join("");
+  const months = (sel, allowed) => allowed.map(m => opt(m, sel, { "-2": "전전월", "-1": "전월", "0": "당월" }[m])).join("");
+  $("#sheetBody").innerHTML = `
+    <header><h3>${existing ? "카드 정보 수정" : "카드 등록"}</h3><button class="iconbtn" id="close" aria-label="닫기">✕</button></header>
+    <div class="form">
+      <div><label for="cname">별칭</label><input type="text" id="cname" value="${esc(c.name)}" placeholder="예: 미니 삼성 아멕스"></div>
+      <div><label>사용자</label><div class="line">
+        ${PAYERS.map(p => `<button class="chip" data-owner="${p.name}" aria-pressed="${c.owner === p.name}">${p.name}</button>`).join("")}
+        <button class="chip" data-owner="" aria-pressed="${!c.owner}">공용</button></div></div>
+      <div><label for="payday">결제일</label><div class="line">매월 <select id="payday">${Array.from({ length: 31 }, (_, i) => opt(i + 1, c.pay_day, i + 1)).join("")}</select> 일</div></div>
+      <div><label>이용기간</label><div class="line">
+        <select id="sm">${months(c.start.m, [-2, -1, 0])}</select><select id="sd">${days(c.start.d)}</select> ~
+        <select id="em">${months(c.end.m, [-1, 0])}</select><select id="ed">${days(c.end.d)}</select></div>
+        <div class="hint" style="margin-top:6px">카드사 앱이나 청구서의 "이용기간"을 그대로 옮기세요. 예: 14일 결제 → 전월 1일 ~ 전월 말일</div></div>
+      <div class="keys"><label>이 카드로 묶을 기록</label>
+        ${detectedKeys.filter(k => !assignedElsewhere.has(k)).map(k => `<label><input type="checkbox" value="${esc(k)}" ${c.keys.includes(k) ? "checked" : ""}> ${esc(keyLabel(k))}</label>`).join("") || `<div class="hint">묶을 수 있는 기록이 없어요.</div>`}
+        <div class="hint">간편결제(GS페이 등)는 문자와 영수증의 끝자리가 다르게 찍혀요. 같은 카드면 함께 체크하세요.</div></div>
+      <button class="primary" id="csave">저장</button>
+      ${existing ? `<button class="danger" id="cdel">이 카드 삭제</button>` : ""}
+      <div class="up-msg" id="cmsg"></div>
+    </div>`;
+  const dlg = $("#sheet"); dlg.showModal();
+  $("#close").onclick = () => dlg.close();
+  dlg.onclick = e => { if (e.target === dlg) dlg.close(); };
+  document.querySelectorAll("[data-owner]").forEach(b => b.onclick = () => {
+    c.owner = b.dataset.owner || null; document.querySelectorAll("[data-owner]").forEach(x => x.setAttribute("aria-pressed", (x.dataset.owner || null) === c.owner));
+  });
+  const persist = async (mutate, msg) => {
+    $("#cmsg").textContent = "저장 중…";
+    try {
+      await loadCards();                 // 다른 기기에서 바꾼 내용 위에 반영
+      mutate(); await saveCards(msg);
+      dlg.close(); render();
+    } catch (e) { $("#cmsg").textContent = `저장하지 못했어요: ${e.message}`; }
+  };
+  $("#csave").onclick = () => {
+    c.name = $("#cname").value.trim() || keyLabel(c.keys[0] || "카드|????");
+    c.pay_day = Number($("#payday").value);
+    c.start = { m: Number($("#sm").value), d: Number($("#sd").value) };
+    c.end = { m: Number($("#em").value), d: Number($("#ed").value) };
+    c.keys = [...document.querySelectorAll(".keys input:checked")].map(i => i.value);
+    delete c.defaults;
+    if (!c.keys.length) { $("#cmsg").textContent = "묶을 기록을 하나 이상 체크해 주세요."; return; }
+    persist(() => { state.cards = state.cards.filter(x => x.id !== c.id).concat([c]); }, `cards: ${c.name} ${existing ? "수정" : "등록"}`);
+  };
+  if (existing) $("#cdel").onclick = () => {
+    if (confirm(`${c.name} 카드를 삭제할까요? 가계부 기록은 그대로 남아요.`)) persist(() => { state.cards = state.cards.filter(x => x.id !== c.id); }, `cards: ${c.name} 삭제`);
   };
 }
 
