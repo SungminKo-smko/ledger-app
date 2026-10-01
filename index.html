@@ -150,6 +150,21 @@ dialog::backdrop{ background:rgba(10,15,20,.45); }
 .tabs{ display:flex; gap:4px; background:var(--paper); border-radius:999px; padding:4px; margin:8px 0 0; }
 .tabs button{ flex:1; border:0; background:transparent; border-radius:999px; padding:8px 0; font-weight:500; cursor:pointer; color:var(--muted); }
 .tabs button[aria-selected="true"]{ background:var(--ink); color:var(--paper); }
+/* 카드 요약 */
+.chero{ padding:18px 2px 4px; }
+.chero .l{ font-size:.9rem; color:var(--muted); }
+.chero .sub2{ margin-top:6px; color:var(--muted); font-size:.9rem; }
+.cchart{ background:var(--paper); border-radius:var(--radius-lg); padding:14px 16px; margin-top:14px; }
+.crow{ display:grid; grid-template-columns:1fr auto; gap:4px 10px; padding:8px 0; border-bottom:1px solid var(--line); width:100%; border-left:0; border-right:0; border-top:0; background:transparent; text-align:left; cursor:pointer; }
+.crow:last-child{ border-bottom:0; }
+.crow .n{ font-weight:500; display:flex; align-items:center; gap:6px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.crow .v{ font-weight:600; text-align:right; white-space:nowrap; }
+.crow .bar{ grid-column:1 / -1; height:10px; border-radius:5px; background:var(--line); display:flex; overflow:hidden; }
+.crow .bar i{ display:block; height:100%; }
+.crow .d{ grid-column:1 / -1; font-size:.78rem; color:var(--muted); }
+.legend{ display:flex; gap:14px; flex-wrap:wrap; font-size:.78rem; color:var(--muted); margin-top:8px; }
+.legend span{ display:inline-flex; align-items:center; gap:5px; }
+.legend i{ width:10px; height:10px; border-radius:3px; display:inline-block; }
 /* 카드 */
 .card{ background:var(--paper); border-radius:var(--radius-lg); padding:16px; margin-top:14px; }
 .card .head{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
@@ -599,6 +614,32 @@ function cardsHTML() {
   const assigned = new Set(state.cards.flatMap(c => c.keys));
   const unassigned = Object.keys(detected).filter(k => !assigned.has(k));
   const noCard = state.tx.filter(t => !t.cancelled && !cardKey(t)).length;
+  // 상단 요약: 카드마다 다가오는 첫 결제 합계 + 카드별 막대(이번 결제 진하게, 그다음 결제 업게)
+  const summary = state.cards.map(c => { const u = upcoming(c); return { c, first: u[0], second: u[1] }; })
+    .filter(x => x.first).sort((a, b) => a.first.pay.localeCompare(b.first.pay));
+  const sumFirst = summary.reduce((s, x) => s + x.first.total, 0);
+  const sumSecond = summary.reduce((s, x) => s + (x.second ? x.second.total : 0), 0);
+  const maxV = Math.max(1, ...summary.map(x => x.first.total + (x.second ? x.second.total : 0)));
+  const ownerColor = c => (PAYERS.find(p => p.name === c.owner) || {}).color || "var(--other)";
+  const payDates = summary.map(x => x.first.pay).sort();
+  const heroHTML = summary.length ? `
+    <div class="chero">
+      <div class="l">다가오는 카드 결제 예정 합계${payDates.length ? ` · ${md(payDates[0])}${payDates.length > 1 && payDates[payDates.length - 1] !== payDates[0] ? " ~ " + md(payDates[payDates.length - 1]) : ""} 결제` : ""}</div>
+      <div class="total">${won(sumFirst)}<small>원</small></div>
+      <div class="sub2">그다음 결제(사용 중) ${won(sumSecond)}원 · 카드 ${summary.length}장</div>
+    </div>
+    <div class="cchart" role="img" aria-label="카드별 결제 예정 금액">
+      ${summary.map(x => {
+        const col = ownerColor(x.c), w1 = x.first.total / maxV * 100, w2 = (x.second ? x.second.total : 0) / maxV * 100;
+        return `<button class="crow" data-bill="${esc(x.c.id)}" data-k="0">
+          <span class="n"><span class="dot" style="width:9px;height:9px;border-radius:50%;background:${col};flex:none"></span>${esc(x.c.name)}</span>
+          <span class="v">${won(x.first.total)}원</span>
+          <span class="bar"><i style="width:${w1}%;background:${col}"></i><i style="width:${w2}%;background:${col};opacity:.35"></i></span>
+          <span class="d">${md(x.first.pay)} 결제 ${won(x.first.total)}원${x.second ? ` · ${md(x.second.pay)} 결제 ${won(x.second.total)}원 (사용 중)` : ""}</span>
+        </button>`;
+      }).join("")}
+      <div class="legend">${PAYERS.map(p => `<span><i style="background:${p.color}"></i>${p.name}</span>`).join("")}<span><i style="background:var(--other)"></i>공용</span><span><i style="background:var(--ink);opacity:.35"></i>업은 색 = 그다음 결제</span></div>
+    </div>` : "";
   const cards = state.cards.map(c => {
     const ups = upcoming(c), p = PAYERS.find(p => p.name === c.owner);
     return `<div class="card">
@@ -615,6 +656,7 @@ function cardsHTML() {
     </div>`;
   }).join("");
   return `
+    ${heroHTML}
     ${cards || `<p class="empty" style="margin-top:14px">아직 등록한 카드가 없어요. 아래에서 기록된 카드를 등록하세요.</p>`}
     ${unassigned.length ? `<div class="unk">가계부에서 찾은 미등록 카드 <span class="hint">(눌러서 등록 · 같은 카드는 수정 화면에서 묶기)</span><br>
       ${unassigned.map(k => `<button class="chip" data-card-new="${esc(k)}">${esc(keyLabel(k))} · ${detected[k].n}건</button>`).join("")}</div>` : ""}
