@@ -614,7 +614,7 @@ function cardsHTML() {
   const assigned = new Set(state.cards.flatMap(c => c.keys));
   const unassigned = Object.keys(detected).filter(k => !assigned.has(k));
   const noCard = state.tx.filter(t => !t.cancelled && !cardKey(t)).length;
-  // 상단 요약: 카드마다 다가오는 첫 결제 합계 + 카드별 막대(이번 결제 진하게, 그다음 결제 업게)
+  // 상단 요약: 카드마다 다가오는 첫 결제 합계 + 카드별 막대(이번 결제 진하게, 그다음 결제 옅게)
   const summary = state.cards.map(c => { const u = upcoming(c); return { c, first: u[0], second: u[1] }; })
     .filter(x => x.first).sort((a, b) => a.first.pay.localeCompare(b.first.pay));
   const sumFirst = summary.reduce((s, x) => s + x.first.total, 0);
@@ -638,7 +638,7 @@ function cardsHTML() {
           <span class="d">${md(x.first.pay)} 결제 ${won(x.first.total)}원${x.second ? ` · ${md(x.second.pay)} 결제 ${won(x.second.total)}원 (사용 중)` : ""}</span>
         </button>`;
       }).join("")}
-      <div class="legend">${PAYERS.map(p => `<span><i style="background:${p.color}"></i>${p.name}</span>`).join("")}<span><i style="background:var(--other)"></i>공용</span><span><i style="background:var(--ink);opacity:.35"></i>업은 색 = 그다음 결제</span></div>
+      <div class="legend">${PAYERS.map(p => `<span><i style="background:${p.color}"></i>${p.name}</span>`).join("")}<span><i style="background:var(--other)"></i>공용</span><span><i style="background:var(--ink);opacity:.35"></i>옅은 색 = 그다음 결제</span></div>
     </div>` : "";
   const cards = state.cards.map(c => {
     const ups = upcoming(c), p = PAYERS.find(p => p.name === c.owner);
