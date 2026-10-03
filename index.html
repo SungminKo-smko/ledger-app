@@ -150,6 +150,13 @@ dialog::backdrop{ background:rgba(10,15,20,.45); }
 .tabs{ display:flex; gap:4px; background:var(--paper); border-radius:999px; padding:4px; margin:8px 0 0; }
 .tabs button{ flex:1; border:0; background:transparent; border-radius:999px; padding:8px 0; font-weight:500; cursor:pointer; color:var(--muted); }
 .tabs button[aria-selected="true"]{ background:var(--ink); color:var(--paper); }
+/* 분류 수정 */
+.editbtn{ margin-top:14px; width:100%; padding:10px; border-radius:var(--radius-sm); border:1px solid var(--line); background:transparent; cursor:pointer; font-weight:500; }
+.catrow{ padding:10px 0; border-bottom:1px solid var(--line); }
+.catrow .nm{ font-size:.9rem; margin-bottom:6px; }
+.catrow .nm small{ color:var(--muted); }
+.catrow select{ font:inherit; padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--line); background:var(--bg); color:var(--ink); margin-right:6px; }
+.hintchk{ display:flex; gap:8px; align-items:flex-start; font-size:.85rem; margin-top:12px; color:var(--ink); }
 /* 카드 요약 */
 .chero{ padding:18px 2px 4px; }
 .chero .l{ font-size:.9rem; color:var(--muted); }
@@ -248,7 +255,7 @@ function parseCSV(text) {
 }
 
 // ---------------------------------------------------------------- 상태
-const state = { token: null, tx: [], items: [], month: null, payer: null, cat: null, loadedAt: null, inbox: { pending: 0, failed: [] }, view: "ledger", cards: [], cardsSha: null };
+const state = { token: null, tx: [], items: [], month: null, payer: null, cat: null, loadedAt: null, inbox: { pending: 0, failed: [] }, view: "ledger", cards: [], cardsSha: null, catMap: {} };
 const ym = d => d.slice(0, 7);
 const monthLabel = m => `${m.slice(0, 4)}년 ${Number(m.slice(5, 7))}월`;
 function shiftMonth(m, k) { const d = new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + k, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
@@ -262,6 +269,7 @@ async function load() {
     state.items = b ? parseCSV(b).map(r => ({ ...r, net: Number(r.net) || 0, amount: Number(r.amount) || 0 })) : [];
     state.inbox = await loadInbox();
     await loadCards();
+    state.catMap = parseCategories(await gh("categories.yml").catch(() => ""));
     state.loadedAt = new Date();
     if (!state.month) {
       const months = state.tx.map(t => ym(t.date)).sort();
@@ -505,9 +513,11 @@ async function openDetail(id) {
       <tr><td>${esc(i.item)}${i.quantity && i.quantity !== "1" ? ` × ${esc(i.quantity)}` : ""}<span class="c">${esc([i.category, i.subcategory].filter(Boolean).join("/"))}${Number(i.discount) ? ` · 할인 ${won(i.discount)}` : ""}</span></td>
       <td>${won(i.net)}원</td></tr>`).join("")}</tbody></table>` : ""}
     ${t.image ? `<button class="imgbtn" id="img">영수증 사진 보기</button><div id="imgbox"></div>` : ""}
+    ${t.record ? `<button class="editbtn" id="editcat">분류 수정</button>` : ""}
   `;
   const dlg = $("#sheet");
   dlg.showModal();
+  if (t.record) $("#editcat").onclick = () => openCategoryEditor(t);
   $("#close").onclick = () => dlg.close();
   dlg.onclick = e => { if (e.target === dlg) dlg.close(); };
   if (t.image) $("#img").onclick = async () => {
@@ -517,6 +527,101 @@ async function openDetail(id) {
       $("#imgbox").innerHTML = `<img class="receipt" alt="${esc(t.merchant)} 영수증" src="${URL.createObjectURL(blob)}">`;
       btn.remove();
     } catch (e) { btn.textContent = "사진을 불러오지 못했어요. 다시 시도"; btn.disabled = false; }
+  };
+}
+
+// ---------------------------------------------------------------- 분류 수정
+// categories.yml 의 "대분류: [소분류, ...]" 줄만 읽는다 (hints 제외)
+function parseCategories(text) {
+  const map = {};
+  for (const line of String(text).split(/\r?\n/)) {
+    const m = line.match(/^([^#\s][^:]*):\s*\[(.*)\]\s*$/);
+    if (m) map[m[1].trim()] = m[2].split(",").map(x => x.trim()).filter(Boolean);
+  }
+  return map;
+}
+// 저장소 파일 읽기/쓰기 (sha 포함)
+async function getFile(path) {
+  const f = await api("GET", `/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${BRANCH}`);
+  const bytes = Uint8Array.from(atob(f.content.replace(/\n/g, "")), c => c.charCodeAt(0));
+  return { text: new TextDecoder().decode(bytes), sha: f.sha };
+}
+async function putFile(path, text, sha, message) {
+  return api("PUT", `/contents/${path.split("/").map(encodeURIComponent).join("/")}`, { message, content: b64utf8(text), sha, branch: BRANCH });
+}
+function catSelectHTML(i, main, sub) {
+  const mains = Object.keys(state.catMap);
+  if (main && !mains.includes(main)) mains.push(main);
+  const subs = (state.catMap[main] || []).slice();
+  if (sub && !subs.includes(sub)) subs.push(sub);
+  return `<select data-main="${i}" aria-label="대분류">${mains.map(m => `<option ${m === main ? "selected" : ""}>${esc(m)}</option>`).join("")}</select>` +
+         `<select data-sub="${i}" aria-label="소분류">${subs.map(x => `<option ${x === sub ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>`;
+}
+
+async function openCategoryEditor(t) {
+  const body = $("#sheetBody");
+  body.innerHTML = `<header><h3>분류 수정</h3><button class="iconbtn" id="close" aria-label="닫기">✕</button></header><p class="empty">불러오는 중</p>`;
+  $("#close").onclick = () => $("#sheet").close();
+  let file, rec;
+  try { file = await getFile(t.record); rec = JSON.parse(file.text); }
+  catch (e) { body.querySelector(".empty").textContent = `기록을 불러오지 못했어요: ${e.message}`; return; }
+  const items = rec.items || [];
+  const rows = items.length
+    ? items.map((it, i) => ({ label: it.name, amt: it.amount, main: it.category?.main || rec.category?.main, sub: it.category?.sub || rec.category?.sub }))
+    : [{ label: "결제 전체", amt: rec.amounts?.total, main: rec.category?.main, sub: rec.category?.sub }];
+  body.innerHTML = `
+    <header><div><h3>분류 수정</h3><div style="color:var(--muted);font-size:.85rem">${esc(t.merchant)} · ${esc(t.date)} · ${won(t.total)}원</div></div>
+      <button class="iconbtn" id="close" aria-label="닫기">✕</button></header>
+    <div>${rows.map((r, i) => `<div class="catrow"><div class="nm">${esc(r.label)} <small>${won(r.amt)}원</small></div>${catSelectHTML(i, r.main, r.sub)}</div>`).join("")}</div>
+    ${!items.length || items.length === 1 ? `<label class="hintchk"><input type="checkbox" id="hint">
+      <span>앞으로 <b>${esc(rec.merchant?.name || t.merchant)}</b> 결제는 이 분류로 자동 기록</span></label>` : ""}
+    <button class="primary" id="catsave">저장</button>
+    <div class="up-msg" id="catmsg">${items.length > 1 ? "품목마다 분류를 바꿀 수 있어요. 대표 분류는 금액이 가장 큰 분류로 자동으로 정해져요." : ""}</div>`;
+  $("#close").onclick = () => $("#sheet").close();
+  // 대분류를 바꾸면 소분류 목록을 그 대분류 것으로
+  body.querySelectorAll("[data-main]").forEach(sel => sel.onchange = () => {
+    const i = sel.dataset.main, subs = state.catMap[sel.value] || ["기타"];
+    body.querySelector(`[data-sub="${i}"]`).innerHTML = subs.map(x => `<option>${esc(x)}</option>`).join("");
+  });
+  $("#catsave").onclick = async () => {
+    const pick = i => ({ main: body.querySelector(`[data-main="${i}"]`).value, sub: body.querySelector(`[data-sub="${i}"]`).value });
+    $("#catsave").disabled = true; $("#catmsg").textContent = "저장 중…";
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt) { file = await getFile(t.record); rec = JSON.parse(file.text); }
+        if (items.length) {
+          (rec.items || []).forEach((it, i) => { it.category = pick(i); });
+          // 대표 분류 = 품목 순금액(금액 - 품목 할인)이 가장 큰 분류
+          const tot = {};
+          for (const it of rec.items) { const k = it.category.main + "/" + it.category.sub; tot[k] = (tot[k] || 0) + (it.amount || 0) - (it.discount || 0); }
+          const best = Object.entries(tot).sort((a, b) => b[1] - a[1])[0][0].split("/");
+          rec.category = { main: best[0], sub: best[1] };
+          const mains = new Set(rec.items.map(it => it.category.main));
+          if (mains.size > 1) rec.category_breakdown = Object.entries(tot).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ main: k.split("/")[0], sub: k.split("/")[1], net: v }));
+          else delete rec.category_breakdown;
+        } else rec.category = pick(0);
+        try { await putFile(t.record, JSON.stringify(rec, null, 2) + "\n", file.sha, `category: ${t.merchant} → ${rec.category.main}/${rec.category.sub} (웹앱)`); break; }
+        catch (e) { if (e.status !== 409 || attempt) throw e; }      // 다른 기기가 먼저 고쳤으면 다시 읽고 한 번 더
+      }
+      if ($("#hint") && $("#hint").checked) {
+        const name = String(rec.merchant?.name || t.merchant).replace(/[:#\n]/g, " ").trim();
+        const c = rec.category, cf = await getFile("categories.yml");
+        if (name && !cf.text.includes(`\n  ${name}:`))
+          await putFile("categories.yml", cf.text.replace(/\s*$/, "") + `\n  ${name}: ${c.main}/${c.sub}\n`, cf.sha, `hint: ${name} → ${c.main}/${c.sub} (웹앱)`);
+      }
+      // 화면에 바로 반영 (집계 파일은 1분 안에 서버가 다시 만든다)
+      const tx = state.tx.find(x => x.id === t.id);
+      if (tx) { tx.category = rec.category.main; tx.subcategory = rec.category.sub; }
+      state.items.filter(x => x.id === t.id).forEach(x => {
+        const it = items.length ? rec.items[Number(x.line) - 1] : null;
+        const c = it ? it.category : rec.category;
+        if (c) { x.category = c.main; x.subcategory = c.sub; }
+      });
+      $("#sheet").close(); render();
+    } catch (e) {
+      $("#catsave").disabled = false;
+      $("#catmsg").textContent = e.status === 403 || e.status === 404 ? "이 토큰은 쓰기 권한이 없어요." : `저장하지 못했어요: ${e.message}`;
+    }
   };
 }
 
