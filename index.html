@@ -638,9 +638,10 @@ function normIssuer(s) {
 const cardKey = t => {
   const iss = normIssuer(t.card_issuer);
   if (!iss && !t.card_last4) return null;
-  return `${iss || "카드"}|${t.card_last4 || "????"}`;
+  // 끝자리가 없으면 문자에 찍힌 카드 이름(현대카드: 이마트Basic, MEdition3 등)으로 구분
+  return `${iss || "카드"}|${t.card_last4 || t.card_name || "????"}`;
 };
-const keyLabel = k => { const [i, l] = k.split("|"); return `${i}카드 ${l === "????" ? "(번호 없음)" : "…" + l}`; };
+const keyLabel = k => { const [i, l] = k.split("|"); return `${i}카드 ${l === "????" ? "(번호 없음)" : /^\d{4}$/.test(l) ? "…" + l : l}`; };
 const DEFAULT_CARD = { pay_day: 14, start: { m: -1, d: 1 }, end: { m: -1, d: 31 } };
 
 async function loadCards() {
