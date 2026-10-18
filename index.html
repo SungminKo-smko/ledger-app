@@ -688,8 +688,15 @@ function bill(card, y, m) {
   const st = statement(card, y, m), lines = [];
   for (const t of cardTx(card)) {
     const pm = payMonthOf(card, t.date); if (!pm) continue;
-    const n = Number((t.installment || "").match(/(\d+)\s*개월/)?.[1] || 1);
     const k = monthsBetween(pm, [y, m]);
+    // 명세서에서 옮긴 진행 중 할부("할부 11/36"): 금액은 이미 1회분 → 남은 회차만큼 매달 같은 금액
+    const run = String(t.installment || "").match(/(\d+)\s*\/\s*(\d+)/);
+    if (run) {
+      const cur = Number(run[1]), n = Number(run[2]);
+      if (k < 0 || cur + k > n) continue;
+      lines.push({ t, amt: t.total, note: `할부 ${cur + k}/${n}회` }); continue;
+    }
+    const n = Number(String(t.installment || "").match(/(\d+)\s*개월/)?.[1] || 1);
     if (k < 0 || k >= n) continue;
     const base = Math.floor(t.total / n), amt = k === 0 ? t.total - base * (n - 1) : base;
     lines.push({ t, amt, note: n > 1 ? `할부 ${k + 1}/${n}회` : "" });
