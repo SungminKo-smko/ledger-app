@@ -183,6 +183,16 @@ dialog::backdrop{ background:rgba(10,15,20,.45); }
 .bill .v{ font-size:1.35rem; font-weight:700; text-align:right; }
 .bill .p{ grid-column:1 / -1; font-size:.8rem; color:var(--muted); }
 .bill.now .v{ font-size:1.05rem; font-weight:600; color:var(--muted); }
+/* 같은 사람·같은 카드사 카드 묶음: 합계 머리 + 카드들 */
+.cgroup{ background:var(--paper); border-radius:var(--radius-lg); padding:16px; margin-top:14px; }
+.cgroup .ghead .nm{ font-weight:600; font-size:1.05rem; }
+.cgroup .ghead .sub{ font-size:.8rem; color:var(--muted); }
+.cgroup .gsum{ display:grid; grid-template-columns:1fr auto; gap:2px 12px; padding:12px 0 0; margin-top:12px; border-top:1px solid var(--line); }
+.cgroup .gsum .l{ font-size:.85rem; color:var(--muted); }
+.cgroup .gsum .v{ font-size:1.35rem; font-weight:700; text-align:right; }
+.cgroup .gsum.now .v{ font-size:1.05rem; font-weight:600; color:var(--muted); }
+.cgroup .gsum .p{ grid-column:1 / -1; font-size:.8rem; color:var(--muted); }
+.cgroup .card{ background:var(--bg); margin-top:12px; }
 .unk{ font-size:.85rem; color:var(--muted); margin-top:14px; }
 .unk button{ margin:6px 6px 0 0; }
 .form{ display:grid; gap:14px; margin-top:14px; }
@@ -753,7 +763,7 @@ function cardsHTML() {
       }).join("")}
       <div class="legend">${PAYERS.map(p => `<span><i style="background:${p.color}"></i>${p.name}</span>`).join("")}<span><i style="background:var(--other)"></i>공용</span><span><i style="background:var(--ink);opacity:.35"></i>옅은 색 = 그다음 결제</span></div>
     </div>` : "";
-  const cards = state.cards.map(c => {
+  const cardHTML = c => {
     const ups = upcoming(c), p = PAYERS.find(p => p.name === c.owner);
     return `<div class="card">
       <div class="head">
@@ -767,7 +777,32 @@ function cardsHTML() {
         <span class="p">이용기간 ${md(b.from)} ~ ${md(b.to)} · ${b.lines.length}건</span>
       </button>`).join("")}
     </div>`;
-  }).join("");
+  };
+  // 같은 사람의 같은 카드사 카드(예: 미니 현대카드 + 미니 kt현대카드)는 한 묶음으로 합계를 보여주고, 각 카드는 그 안에 그대로 둔다
+  const issuerOf = c => normIssuer((c.keys[0] || "").split("|")[0]) || "기타";
+  const groups = [];
+  for (const c of state.cards) {
+    const g = groups.find(g => g.owner === (c.owner || "") && g.issuer === issuerOf(c));
+    if (g) g.cards.push(c); else groups.push({ owner: c.owner || "", issuer: issuerOf(c), cards: [c] });
+  }
+  const groupHTML = g => {
+    if (g.cards.length < 2) return cardHTML(g.cards[0]);
+    const byPay = {};
+    for (const c of g.cards) upcoming(c).forEach((b, i) => {
+      const x = byPay[b.pay] ||= { pay: b.pay, total: 0, n: 0, cards: 0, now: i > 0 };
+      x.total += b.total; x.n += b.lines.length; x.cards++; x.now = x.now && i > 0;
+    });
+    const rows = Object.values(byPay).sort((a, b) => a.pay.localeCompare(b.pay)).slice(0, 2);
+    const p = PAYERS.find(p => p.name === g.owner);
+    return `<div class="cgroup">
+      <div class="ghead"><div class="nm">${p ? `<span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${p.color};margin-right:6px"></span>` : ""}${esc(g.owner)} ${esc(g.issuer)}카드 합계</div>
+        <div class="sub">${g.cards.map(c => esc(c.name)).join(" + ")}</div></div>
+      ${rows.map((r, i) => `<div class="gsum ${i ? "now" : ""}"><span class="l">${md(r.pay)} 결제 예정 합계</span><span class="v">${won(r.total)}원</span>
+        <span class="p">카드 ${r.cards}장 · ${r.n}건</span></div>`).join("")}
+      ${g.cards.map(cardHTML).join("")}
+    </div>`;
+  };
+  const cards = groups.map(groupHTML).join("");
   return `
     ${heroHTML}
     ${cards || `<p class="empty" style="margin-top:14px">아직 등록한 카드가 없어요. 아래에서 기록된 카드를 등록하세요.</p>`}
