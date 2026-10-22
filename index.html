@@ -271,15 +271,45 @@ const monthLabel = m => `${m.slice(0, 4)}년 ${Number(m.slice(5, 7))}월`;
 function shiftMonth(m, k) { const d = new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + k, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
 const thisMonth = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
 
+// ---------------------------------------------------------------- Supabase (읽기)
+// 기록·카드·분류·사진은 Supabase에서 읽는다. 함수가 GitHub 토큰으로 이 가계부 repo 접근 권한을 확인한다.
+// Supabase가 안 되면 예전처럼 GitHub 파일에서 읽는다. 쓰기(분류 수정·카드·영수증 올리기)는 아직 GitHub → 1~2분 뒤 DB에 반영.
+const SB_FN = "https://spsjxmbhorvcraqssrmn.supabase.co/functions/v1/ledger-api";
+async function sb(query = "") {
+  const r = await fetch(SB_FN + query, { headers: { "x-gh-token": state.token }, cache: "no-store" });
+  if (r.status === 401) throw Object.assign(new Error("auth"), { status: 401 });
+  if (!r.ok) throw Object.assign(new Error(`Supabase ${r.status}`), { status: r.status });
+  return r.json();
+}
+const str = v => v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+const strRow = r => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, str(v)]));
+async function loadFromSupabase() {
+  const d = await sb();
+  state.tx = d.ledger.map(r => ({ ...strRow(r), total: Number(r.total) || 0, cancelled: r.status === "cancelled",
+    record: str(r.path), review: r.needs_review ? "Y" : "" }));
+  state.items = d.items.map(r => ({ ...strRow(r), net: Number(r.net) || 0, amount: Number(r.amount) || 0 }));
+  state.cards = d.cards.map(c => ({ id: c.id, name: c.name, owner: c.owner, keys: c.keys || [], pay_day: c.pay_day,
+    start: { m: c.start_m, d: c.start_d }, end: { m: c.end_m, d: c.end_d }, ...(c.product ? { product: c.product } : {}) }));
+  state.cardsSha = null;                    // 카드 저장 때 GitHub에서 최신 sha 를 받아 쓴다
+  state.catMap = {};
+  for (const c of d.categories) (state.catMap[c.main] ||= []).push(c.sub);
+  state.source = "supabase";
+}
+async function loadFromGitHub() {
+  const [a, b] = await Promise.all([gh("ledger.csv"), gh("ledger_items.csv").catch(() => "")]);
+  state.tx = parseCSV(a).map(r => ({ ...r, total: Number(r.total) || 0, cancelled: r.status === "cancelled" }));
+  state.items = b ? parseCSV(b).map(r => ({ ...r, net: Number(r.net) || 0, amount: Number(r.amount) || 0 })) : [];
+  await loadCards();
+  state.catMap = parseCategories(await gh("categories.yml").catch(() => ""));
+  state.source = "github";
+}
+
 async function load() {
   $("#app").innerHTML = `<p class="status">불러오는 중</p>`;
   try {
-    const [a, b] = await Promise.all([gh("ledger.csv"), gh("ledger_items.csv").catch(() => "")]);
-    state.tx = parseCSV(a).map(r => ({ ...r, total: Number(r.total) || 0, cancelled: r.status === "cancelled" }));
-    state.items = b ? parseCSV(b).map(r => ({ ...r, net: Number(r.net) || 0, amount: Number(r.amount) || 0 })) : [];
+    try { await loadFromSupabase(); }
+    catch (e) { if (e.message === "auth") throw e; console.warn("Supabase 실패, GitHub에서 읽음:", e); await loadFromGitHub(); }
     state.inbox = await loadInbox();
-    await loadCards();
-    state.catMap = parseCategories(await gh("categories.yml").catch(() => ""));
     state.loadedAt = new Date();
     if (!state.month) {
       const months = state.tx.map(t => ym(t.date)).sort();
@@ -420,7 +450,7 @@ function render() {
     `}
 
     <div class="foot">
-      <span>${state.loadedAt ? `${state.loadedAt.getHours()}:${String(state.loadedAt.getMinutes()).padStart(2, "0")} 기준` : ""}</span>
+      <span>${state.loadedAt ? `${state.loadedAt.getHours()}:${String(state.loadedAt.getMinutes()).padStart(2, "0")} 기준${state.source === "github" ? " (GitHub)" : ""}` : ""}</span>
       <button id="logout">이 기기에서 토큰 지우기</button>
     </div>
   </div>`;
@@ -533,8 +563,10 @@ async function openDetail(id) {
   if (t.image) $("#img").onclick = async () => {
     const btn = $("#img"); btn.textContent = "불러오는 중"; btn.disabled = true;
     try {
-      const blob = await gh(t.image, "blob");
-      $("#imgbox").innerHTML = `<img class="receipt" alt="${esc(t.merchant)} 영수증" src="${URL.createObjectURL(blob)}">`;
+      let src;
+      try { src = (await sb(`?what=image&path=${encodeURIComponent(t.image)}`)).url; }
+      catch (e) { src = URL.createObjectURL(await gh(t.image, "blob")); }    // DB에 아직 없는 사진은 GitHub에서
+      $("#imgbox").innerHTML = `<img class="receipt" alt="${esc(t.merchant)} 영수증" src="${esc(src)}">`;
       btn.remove();
     } catch (e) { btn.textContent = "사진을 불러오지 못했어요. 다시 시도"; btn.disabled = false; }
   };
@@ -663,6 +695,9 @@ async function loadCards() {
   } catch (e) { if (e.status === 404) { state.cards = []; state.cardsSha = null; } else throw e; }
 }
 async function saveCards(message) {
+  if (!state.cardsSha) {
+    try { state.cardsSha = (await api("GET", `/contents/cards.json?ref=${BRANCH}`)).sha; } catch (e) { if (e.status !== 404) throw e; }
+  }
   const content = b64utf8(JSON.stringify({ cards: state.cards }, null, 2) + "\n");
   const r = await api("PUT", "/contents/cards.json", { message, content, sha: state.cardsSha || undefined, branch: BRANCH });
   state.cardsSha = r.content.sha;
