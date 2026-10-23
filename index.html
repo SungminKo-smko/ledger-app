@@ -281,15 +281,24 @@ async function sb(query = "") {
   if (!r.ok) throw Object.assign(new Error(`Supabase ${r.status}`), { status: r.status });
   return r.json();
 }
+async function sbPost(body) {
+  const r = await fetch(SB_FN, { method: "POST", headers: { "x-gh-token": state.token, "Content-Type": "application/json" }, body: JSON.stringify(body), cache: "no-store" });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(data.error || `Supabase ${r.status}`), { status: r.status });
+  return data;
+}
+// Supabase 함수가 응답하지 않거나(네트워크) 서버 오류일 때만 예전처럼 GitHub에 직접 저장한다
+const sbDown = e => !e.status || e.status >= 500;
 const str = v => v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
 const strRow = r => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, str(v)]));
+const cardFromRow = c => ({ id: c.id, name: c.name, owner: c.owner, keys: c.keys || [], pay_day: c.pay_day,
+  start: { m: c.start_m, d: c.start_d }, end: { m: c.end_m, d: c.end_d }, ...(c.product ? { product: c.product } : {}) });
 async function loadFromSupabase() {
   const d = await sb();
   state.tx = d.ledger.map(r => ({ ...strRow(r), total: Number(r.total) || 0, cancelled: r.status === "cancelled",
     record: str(r.path), review: r.needs_review ? "Y" : "" }));
   state.items = d.items.map(r => ({ ...strRow(r), net: Number(r.net) || 0, amount: Number(r.amount) || 0 }));
-  state.cards = d.cards.map(c => ({ id: c.id, name: c.name, owner: c.owner, keys: c.keys || [], pay_day: c.pay_day,
-    start: { m: c.start_m, d: c.start_d }, end: { m: c.end_m, d: c.end_d }, ...(c.product ? { product: c.product } : {}) }));
+  state.cards = d.cards.map(cardFromRow);
   state.cardsSha = null;                    // 카드 저장 때 GitHub에서 최신 sha 를 받아 쓴다
   state.catMap = {};
   for (const c of d.categories) (state.catMap[c.main] ||= []).push(c.sub);
@@ -606,8 +615,10 @@ async function openCategoryEditor(t) {
   body.innerHTML = `<header><h3>분류 수정</h3><button class="iconbtn" id="close" aria-label="닫기">✕</button></header><p class="empty">불러오는 중</p>`;
   $("#close").onclick = () => $("#sheet").close();
   let file, rec;
-  try { file = await getFile(t.record); rec = JSON.parse(file.text); }
-  catch (e) { body.querySelector(".empty").textContent = `기록을 불러오지 못했어요: ${e.message}`; return; }
+  try {
+    try { rec = (await sb(`?what=record&id=${encodeURIComponent(t.id)}`)).record; }
+    catch (e) { file = await getFile(t.record); rec = JSON.parse(file.text); }
+  } catch (e) { body.querySelector(".empty").textContent = `기록을 불러오지 못했어요: ${e.message}`; return; }
   const items = rec.items || [];
   const rows = items.length
     ? items.map((it, i) => ({ label: it.name, amt: it.amount, main: it.category?.main || rec.category?.main, sub: it.category?.sub || rec.category?.sub }))
@@ -630,8 +641,17 @@ async function openCategoryEditor(t) {
     const pick = i => ({ main: body.querySelector(`[data-main="${i}"]`).value, sub: body.querySelector(`[data-sub="${i}"]`).value });
     $("#catsave").disabled = true; $("#catmsg").textContent = "저장 중…";
     try {
+      const hintName = $("#hint") && $("#hint").checked ? String(rec.merchant?.name || t.merchant).replace(/[:#\n]/g, " ").trim() : null;
+      let viaSb = false;
+      try {
+        // Supabase에 저장 (서버가 GitHub 최신 기록 위에 분류만 바꾸고 GitHub에도 남김)
+        const r = await sbPost({ op: "category", id: t.id, hint: hintName || undefined,
+          ...(items.length ? { items: items.map((_, i) => pick(i)) } : { category: pick(0) }) });
+        rec = r.record; viaSb = true;
+      } catch (e) { if (!sbDown(e)) throw e; console.warn("Supabase 저장 실패, GitHub에 직접 저장:", e); }
+      if (!viaSb) {
       for (let attempt = 0; attempt < 2; attempt++) {
-        if (attempt) { file = await getFile(t.record); rec = JSON.parse(file.text); }
+        file = await getFile(t.record); rec = JSON.parse(file.text);      // 항상 GitHub 최신 기록 위에
         if (items.length) {
           (rec.items || []).forEach((it, i) => { it.category = pick(i); });
           // 대표 분류 = 품목 순금액(금액 - 품목 할인)이 가장 큰 분류
@@ -646,11 +666,12 @@ async function openCategoryEditor(t) {
         try { await putFile(t.record, JSON.stringify(rec, null, 2) + "\n", file.sha, `category: ${t.merchant} → ${rec.category.main}/${rec.category.sub} (웹앱)`); break; }
         catch (e) { if (e.status !== 409 || attempt) throw e; }      // 다른 기기가 먼저 고쳤으면 다시 읽고 한 번 더
       }
-      if ($("#hint") && $("#hint").checked) {
-        const name = String(rec.merchant?.name || t.merchant).replace(/[:#\n]/g, " ").trim();
+      if (hintName) {
+        const name = hintName;
         const c = rec.category, cf = await getFile("categories.yml");
         if (name && !cf.text.includes(`\n  ${name}:`))
           await putFile("categories.yml", cf.text.replace(/\s*$/, "") + `\n  ${name}: ${c.main}/${c.sub}\n`, cf.sha, `hint: ${name} → ${c.main}/${c.sub} (웹앱)`);
+      }
       }
       // 화면에 바로 반영 (집계 파일은 1분 안에 서버가 다시 만든다)
       const tx = state.tx.find(x => x.id === t.id);
@@ -921,8 +942,15 @@ function openCardEditor(id, newKey) {
   const persist = async (mutate, msg) => {
     $("#cmsg").textContent = "저장 중…";
     try {
-      await loadCards();                 // 다른 기기에서 바꾼 내용 위에 반영
-      mutate(); await saveCards(msg);
+      try {
+        // Supabase에 저장 (서버가 GitHub cards.json 에도 남김)
+        state.cards = (await sb("?what=cards")).cards.map(cardFromRow);   // 다른 기기에서 바꾼 내용 위에 반영
+        mutate(); await sbPost({ op: "cards", cards: state.cards, message: msg });
+      } catch (e) {
+        if (!sbDown(e)) throw e;
+        console.warn("Supabase 저장 실패, GitHub에 직접 저장:", e);
+        await loadCards(); mutate(); await saveCards(msg);
+      }
       dlg.close(); render();
     } catch (e) { $("#cmsg").textContent = `저장하지 못했어요: ${e.message}`; }
   };
@@ -1049,8 +1077,9 @@ function openUpload() {
     try {
       const jpeg = await toJpeg(file);
       $("#msg").textContent = "올리는 중…";
-      await commitReceipt(jpeg, { payer, memo: $("#memo").value.trim() || null, original_filename: file.name,
-        uploaded_at: new Date().toISOString() });
+      const meta = { payer, memo: $("#memo").value.trim() || null, original_filename: file.name, uploaded_at: new Date().toISOString() };
+      try { await sbPost({ op: "receipt", image: b64(await jpeg.arrayBuffer()), meta }); }      // Supabase에 원본 보관 + GitHub inbox(자동 추출)
+      catch (e) { if (!sbDown(e)) throw e; console.warn("Supabase 저장 실패, GitHub에 직접 올림:", e); await commitReceipt(jpeg, meta); }
       try { localStorage.setItem("ledger.payer", payer); } catch (e) {}
       state.inbox.pending = (state.inbox.pending || 0) + 1;
       dlg.close(); render();
