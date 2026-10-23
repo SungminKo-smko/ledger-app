@@ -308,7 +308,8 @@ async function load() {
   $("#app").innerHTML = `<p class="status">불러오는 중</p>`;
   try {
     try { await loadFromSupabase(); }
-    catch (e) { if (e.message === "auth") throw e; console.warn("Supabase 실패, GitHub에서 읽음:", e); await loadFromGitHub(); }
+    // Supabase가 거절하거나 안 되면 GitHub에서 읽는다. 토큰이 정말 틀렸는지는 GitHub가 판단(그때만 토큰을 지움)
+    catch (e) { console.warn("Supabase 실패, GitHub에서 읽음:", e); await loadFromGitHub(); }
     state.inbox = await loadInbox();
     state.loadedAt = new Date();
     if (!state.month) {
